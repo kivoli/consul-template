@@ -88,7 +88,13 @@ func TestNewWatcher_renewVault(t *testing.T) {
 	}
 	defer w.Stop()
 
-	if !w.Watching(&dep.VaultToken{}) {
+	// TODO: Find a better way to test this
+	pseudotoken := &dep.VaultToken{
+		Action: "renew-self",
+		Mount: "token",
+	}
+
+	if !w.Watching(pseudotoken) {
 		t.Errorf("expected watcher to be renewing vault token")
 	}
 }
