@@ -1,17 +1,24 @@
 package dependency
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
+
+	vaultapi "github.com/hashicorp/vault/api"
 )
 
 // VaultToken is the dependency to Vault for a secret
 type VaultToken struct {
 	sync.Mutex
 
-	leaseID       string
 	leaseDuration int
+	Action        string
+	Mount         string
+	data          map[string]interface{}
+	token         *Secret
 
 	stopped bool
 	stopCh  chan struct{}
@@ -30,12 +37,12 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 		opts = &QueryOptions{}
 	}
 
-	log.Printf("[DEBUG] (%s) renewing vault token", d.Display())
+	log.Printf("[DEBUG] (%s) querying vault for token with %+v", d.Display(), opts)
 
 	// If this is not the first query and we have a lease duration, sleep until we
 	// try to renew.
-	if opts.WaitIndex != 0 && d.leaseDuration != 0 {
-		duration := time.Duration(d.leaseDuration/2.0) * time.Second
+	if opts.WaitIndex != 0 && d.token != nil && d.token.Auth.LeaseDuration != 0 {
+		duration := time.Duration(d.token.Auth.LeaseDuration/2.0) * time.Second
 
 		if duration < 1*time.Second {
 			log.Printf("[DEBUG] (%s) increasing sleep to 1s (was %q)",
@@ -46,6 +53,7 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 		log.Printf("[DEBUG] (%s) sleeping for %q", d.Display(), duration)
 		select {
 		case <-d.stopCh:
+			log.Printf("[DEBUG] (%s) received interrupt", d.Display())
 			return nil, nil, ErrStopped
 		case <-time.After(duration):
 		}
@@ -54,36 +62,90 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 	// Grab the vault client
 	vault, err := clients.Vault()
 	if err != nil {
-		return nil, nil, ErrWithExitf("vault_token: %s", err)
+		return nil, nil, ErrWithExitf("vault token: %s", err)
 	}
 
-	token, err := vault.Auth().Token().RenewSelf(0)
+	// Attempt to renew the secret. If we do not have a secret or if that secret
+	// is not renewable, we will attempt a (re-)read later.
+	if d.token != nil && d.token.Auth.ClientToken != "" && d.token.Auth.Renewable {
+
+		// Attach the token to renew as BODY
+		renew_data := make(map[string]interface{})
+		renew_data["token"] = d.token.Auth.ClientToken
+
+		renewal, err := vault.Logical().Write("auth/" + d.Mount + "/renew", renew_data)
+		if err == nil {
+			log.Printf("[DEBUG] (%s) successfully renewed", d.Display())
+
+			log.Printf("[DEBUG] (%s) %#v", d.Display(), renewal)
+
+			leaseDuration := renewal.Auth.LeaseDuration
+			if leaseDuration == 0 {
+				log.Printf("[WARN] (%s) lease duration is 0, setting to 5s", d.Display())
+				leaseDuration = 5
+			}
+
+			d.Lock()
+			d.token.Auth.LeaseDuration = leaseDuration
+			d.Unlock()
+
+			// Create our cloned secret
+			secretauth := &vaultapi.SecretAuth{
+				ClientToken:   d.token.Auth.ClientToken,
+				Accessor:      d.token.Auth.Accessor,
+				Policies:      d.token.Auth.Policies,
+				Metadata:      d.token.Auth.Metadata,
+				LeaseDuration: d.token.Auth.LeaseDuration,
+				Renewable:     d.token.Auth.Renewable,
+			}
+
+			token := &Secret{
+				LeaseDuration: secretauth.LeaseDuration,
+				Auth:          secretauth,
+			}
+
+			return respWithMetadata(token)
+		}
+
+		// The renewal failed for some reason.
+		log.Printf("[WARN] (%s) failed to renew, re-obtaining: %s", d.Display(), err)
+	}
+
+	// If we got this far, we either didn't have a token to renew, the token was
+	// not renewable, or the renewal failed, so attempt a fresh read.
+	var vaultSecret *vaultapi.Secret
+	vaultSecret, err = vault.Logical().Write(("auth/" + d.Mount + "/" + d.Action), d.data)
+
 	if err != nil {
-		return nil, nil, ErrWithExitf("error renewing vault token: %s", err)
+		return nil, nil, ErrWithExitf("error obtaining from vault: %s", err)
 	}
 
 	// Create our cloned secret
-	secret := &Secret{
-		LeaseID:       token.LeaseID,
-		LeaseDuration: token.Auth.LeaseDuration,
-		Renewable:     token.Auth.Renewable,
-		Data:          token.Data,
+	secretauth := &vaultapi.SecretAuth{
+		ClientToken:   vaultSecret.Auth.ClientToken,
+		Accessor:      vaultSecret.Auth.Accessor,
+		Policies:      vaultSecret.Auth.Policies,
+		Metadata:      vaultSecret.Auth.Metadata,
+		LeaseDuration: leaseDurationOrDefault(vaultSecret.Auth.LeaseDuration),
+		Renewable:     vaultSecret.Auth.Renewable,
 	}
 
-	leaseDuration := token.Auth.LeaseDuration
-	if leaseDuration == 0 {
-		log.Printf("[WARN] (%s) lease duration is 0, setting to 5s", d.Display())
-		leaseDuration = 5
+	token := &Secret{
+		LeaseDuration: secretauth.LeaseDuration,
+		Auth:          secretauth,
 	}
+
+	log.Printf("[DEBUG] (%s) %#v", d.Display(), token)
 
 	d.Lock()
-	d.leaseID = secret.LeaseID
-	d.leaseDuration = leaseDuration
+	d.token = token
+		// To stay compatible with the original implementation
+	d.leaseDuration = token.Auth.LeaseDuration
 	d.Unlock()
 
-	log.Printf("[DEBUG] (%s) successfully renewed token", d.Display())
+	log.Printf("[DEBUG] (%s) successfully retrieved token", d.Display())
 
-	return respWithMetadata(secret)
+	return respWithMetadata(token)
 }
 
 // CanShare returns if this dependency is shareable.
@@ -93,13 +155,13 @@ func (d *VaultToken) CanShare() bool {
 
 // HashCode returns the hash code for this dependency.
 func (d *VaultToken) HashCode() string {
-	return "VaultToken"
+	return fmt.Sprintf("VaultToken|%s/%s", d.Mount, d.Action)
 }
 
 // Display returns a string that should be displayed to the user in output (for
 // example).
 func (d *VaultToken) Display() string {
-	return "vault_token"
+	return fmt.Sprintf(`"vault_token(%s/%s)"`, d.Mount, d.Action)
 }
 
 // Stop halts the dependency's fetch function.
@@ -113,7 +175,54 @@ func (d *VaultToken) Stop() {
 	}
 }
 
+
 // ParseVaultToken creates a new VaultToken dependency.
-func ParseVaultToken() (*VaultToken, error) {
-	return &VaultToken{stopCh: make(chan struct{})}, nil
+//func ParseVaultToken() (*VaultToken, error) {
+//	return &VaultToken{stopCh: make(chan struct{})}, nil
+//}
+
+// ParseVaultToken creates a new VaultToken dependency.
+func ParseVaultToken(s ...string) (*VaultToken, error) {
+	action := "renew-self"
+	mount := "token"
+	var rest []string
+	// To maintain maximum compatibility with the previous implementation,
+	// we assume that, if no argument is given, a token renewal is requested
+	switch len(s) {
+	case 0:
+		log.Printf("[DEBUG] No parameters passed, assuming defaults")
+	default:
+		rest = s[2:len(s)]
+		fallthrough
+	case 2:
+		mount = s[1]
+		fallthrough
+	case 1:
+		action = s[0]
+	}
+
+	if len(mount) == 0 {
+		// By default we just assume the generic token backend should be used
+		mount = "token"
+		log.Printf("[DEBUG] Mount point is empty, assuming %s", mount)
+	}
+
+	data := make(map[string]interface{})
+	for _, str := range rest {
+		parts := strings.SplitN(str, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid value %q - must be key=value", str)
+		}
+
+		k, v := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		data[k] = v
+	}
+
+	vs := &VaultToken{
+		Action:  action,
+		Mount:   mount,
+		data:    data,
+		stopCh:  make(chan struct{}),
+	}
+	return vs, nil
 }

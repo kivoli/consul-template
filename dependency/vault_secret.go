@@ -19,6 +19,8 @@ type Secret struct {
 	// Data is the actual contents of the secret. The format of the data
 	// is arbitrary and up to the secret backend.
 	Data map[string]interface{}
+	Auth *vaultapi.SecretAuth
+
 }
 
 // VaultSecret is the dependency to Vault for a secret
