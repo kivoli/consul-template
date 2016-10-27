@@ -342,6 +342,35 @@ func servicesFunc(brain *Brain,
 	}
 }
 
+// tokenFunc returns or accumulates token dependencies from Vault.
+func tokenFunc(brain *Brain,
+	used, missing map[string]dep.Dependency) func(...string) (*dep.Token, error) {
+	return func(s ...string) (*dep.Token, error) {
+		result := &dep.Token{}
+
+		if len(s) == 0 {
+			return result, nil
+		}
+
+		d, err := dep.ParseVaultToken(s...)
+		if err != nil {
+			return result, nil
+		}
+
+		addDependency(used, d)
+
+		if value, ok := brain.Recall(d); ok {
+			result = value.(*dep.Token)
+			return result, nil
+		}
+
+		addDependency(missing, d)
+
+		return result, nil
+	}
+}
+
+
 // treeFunc returns or accumulates keyPrefix dependencies.
 func treeFunc(brain *Brain,
 	used, missing map[string]dep.Dependency) func(string) ([]*dep.KeyPair, error) {
