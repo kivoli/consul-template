@@ -77,8 +77,6 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 		if err == nil {
 			log.Printf("[DEBUG] (%s) successfully renewed", d.Display())
 
-			log.Printf("[DEBUG] (%s) %#v", d.Display(), renewal)
-
 			leaseDuration := renewal.Auth.LeaseDuration
 			if leaseDuration == 0 {
 				log.Printf("[WARN] (%s) lease duration is 0, setting to 5s", d.Display())
@@ -134,8 +132,6 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 		LeaseDuration: secretauth.LeaseDuration,
 		Auth:          secretauth,
 	}
-
-	log.Printf("[DEBUG] (%s) %#v", d.Display(), token)
 
 	d.Lock()
 	d.token = token
