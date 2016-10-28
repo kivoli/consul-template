@@ -17,6 +17,7 @@ import (
 	"github.com/burntsushi/toml"
 	dep "github.com/hashicorp/consul-template/dependency"
 	yaml "gopkg.in/yaml.v2"
+	vaultapi "github.com/hashicorp/vault/api"
 )
 
 // now is function that represents the current time in UTC. This is here
@@ -344,9 +345,9 @@ func servicesFunc(brain *Brain,
 
 // tokenFunc returns or accumulates token dependencies from Vault.
 func tokenFunc(brain *Brain,
-	used, missing map[string]dep.Dependency) func(...string) (*dep.Secret, error) {
-	return func(s ...string) (*dep.Secret, error) {
-		result := &dep.Secret{}
+	used, missing map[string]dep.Dependency) func(...string) (*vaultapi.SecretAuth, error) {
+	return func(s ...string) (*vaultapi.SecretAuth, error) {
+		result := &vaultapi.SecretAuth{}
 
 		if len(s) == 0 {
 			return result, nil
@@ -360,7 +361,8 @@ func tokenFunc(brain *Brain,
 		addDependency(used, d)
 
 		if value, ok := brain.Recall(d); ok {
-			result = value.(*dep.Secret)
+			secret := value.(*dep.Secret)
+			result = secret.Auth
 			return result, nil
 		}
 
