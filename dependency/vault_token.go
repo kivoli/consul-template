@@ -30,7 +30,8 @@ type VaultToken struct {
 }
 
 // Fetch queries the Vault API
-func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{}, *ResponseMetadata, error) {
+func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
+		*ResponseMetadata, error) {
 	d.Lock()
 	if d.stopped {
 		defer d.Unlock()
@@ -42,7 +43,7 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 		opts = &QueryOptions{}
 	}
 
-	log.Printf("[DEBUG] (%s) renewing vault token", d.Display())
+	log.Printf("[DEBUG] (%s) Retrieving vault token", d.Display())
 
 	// If this is not the first query and we have a lease duration, sleep until we
 	// try to renew.
@@ -72,19 +73,22 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 
 	// Attempt to renew the secret. If we do not have a secret or if that secret
 	// is not renewable, we will attempt a (re-)read later.
-	if d.token != nil && d.token.Auth.ClientToken != "" && d.token.Auth.Renewable {
+	if d.token != nil && d.token.Auth.ClientToken != "" &&
+		d.token.Auth.Renewable {
 
 		// Attach the token to renew as BODY
 		renew_data := make(map[string]interface{})
 		renew_data["token"] = d.token.Auth.ClientToken
 
-		renewal, err := vault.Logical().Write("auth/" + d.Mount + "/renew", renew_data)
+		renewal, err := vault.Logical().Write("auth/" + d.Mount + "/renew",
+				renew_data)
 		if err == nil {
 			log.Printf("[DEBUG] (%s) successfully renewed", d.Display())
 
 			leaseDuration := renewal.Auth.LeaseDuration
 			if leaseDuration == 0 {
-				log.Printf("[WARN] (%s) lease duration is 0, setting to 5s", d.Display())
+				log.Printf("[WARN] (%s) lease duration is 0, setting to 5s",
+					d.Display())
 				leaseDuration = 5
 			}
 
@@ -111,13 +115,15 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 		}
 
 		// The renewal failed for some reason.
-		log.Printf("[WARN] (%s) failed to renew, re-obtaining: %s", d.Display(), err)
+		log.Printf("[WARN] (%s) failed to renew, re-obtaining: %s", d.Display(),
+			err)
 	}
 
 	// If we got this far, we either didn't have a token to renew, the token was
 	// not renewable, or the renewal failed, so attempt a fresh read.
 	var vaultSecret *vaultapi.Secret
-	vaultSecret, err = vault.Logical().Write(("auth/" + d.Mount + "/" + d.Action), d.data)
+	vaultSecret, err = vault.Logical().Write(("auth/" + d.Mount + "/" + d.Action),
+		d.data)
 
 	if err != nil {
 		return nil, nil, ErrWithExitf("error obtaining from vault: %s", err)
@@ -165,23 +171,28 @@ func (d *VaultToken) HashCode() string {
 	// To enable the use of defaults we have to cover the case when these
 	// fields are not set
 	if len(d.ID) == 0 {
-		return "VaultToken|token/renew-self|consul-template"
+		log.Printf("[DEBUG] (%s) VaultToken without ID - assuming defaults",
+			d.Display())
+		return "VaultToken|consul-template:token/renew-self"
 	}	else if len(d.Action) == 0 {
 		// If this function is called with an empty token the defaults are assumed
 		// but any Token with a custom ID also needs to have an action specified
-		log.Printf("[ERROR] (%s) Invalid VaultToken - ID set but Action missing", d.Display())
+		log.Printf("[ERROR] (%s) Invalid VaultToken - ID set but Action missing",
+			d.Display())
 		return ""
 	}	else if len(d.Mount) == 0 {
-		return fmt.Sprintf("VaultToken|token/%s|%s", d.Action, d.ID)
+		log.Printf("[DEBUG] (%s) VaultToken without Mount - assuming token",
+			d.Display())
+		return fmt.Sprintf("VaultToken|%s:token/%s", d.ID, d.Action)
 	}
 
-	return fmt.Sprintf("VaultToken|%s/%s|%s", d.Mount, d.Action, d.ID)
+	return fmt.Sprintf("VaultToken|%s:%s/%s", d.ID, d.Mount, d.Action)
 }
 
 // Display returns a string that should be displayed to the user in output (for
 // example).
 func (d *VaultToken) Display() string {
-	return fmt.Sprintf(`"vault_token(%s/%s)"`, d.Mount, d.Action)
+	return fmt.Sprintf(`"VaultToken(%s:%s/%s)"`, d.ID, d.Mount, d.Action)
 }
 
 // Stop halts the dependency's fetch function.
@@ -206,7 +217,8 @@ func ParseVaultToken(s ...string) (*VaultToken, error) {
 	switch len(s) {
 	case 0:
 		// To allow backward’s compatibility
-		log.Printf("[DEBUG] No parameters passed, using consul-template's token")
+		log.Printf("[DEBUG] (vault_token) No parameters passed, using " +
+			"consul-template's token")
 	default:
 		rest = s[3:len(s)]
 		fallthrough
@@ -217,13 +229,9 @@ func ParseVaultToken(s ...string) (*VaultToken, error) {
 		action = s[1]
 		id = s[0]
 	case 1:
+		log.Printf("[ERROR] (vault_token) Expected 2 or more arguments, got %d",
+			len(s))
 		return nil, fmt.Errorf("expected 2 or more arguments, got %d", len(s))
-	}
-
-	if len(mount) == 0 {
-		// By default we just assume the generic token backend should be used
-		mount = "token"
-		log.Printf("[DEBUG] Mount point is empty, assuming %s", mount)
 	}
 
 	data := make(map[string]interface{})

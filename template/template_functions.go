@@ -349,10 +349,6 @@ func tokenFunc(brain *Brain,
 	return func(s ...string) (*vaultapi.SecretAuth, error) {
 		result := &vaultapi.SecretAuth{}
 
-		if len(s) == 0 {
-			return result, nil
-		}
-
 		d, err := dep.ParseVaultToken(s...)
 		if err != nil {
 			return result, nil
