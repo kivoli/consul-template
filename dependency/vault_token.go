@@ -14,7 +14,12 @@ import (
 type VaultToken struct {
 	sync.Mutex
 
+	leaseID       string
 	leaseDuration int
+
+	// Since different tokens may use the same mount and action we need some
+	// unique property for the HashCode function
+	ID            string
 	Action        string
 	Mount         string
 	data          map[string]interface{}
@@ -37,7 +42,7 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 		opts = &QueryOptions{}
 	}
 
-	log.Printf("[DEBUG] (%s) querying vault for token with %+v", d.Display(), opts)
+	log.Printf("[DEBUG] (%s) renewing vault token", d.Display())
 
 	// If this is not the first query and we have a lease duration, sleep until we
 	// try to renew.
@@ -62,7 +67,7 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 	// Grab the vault client
 	vault, err := clients.Vault()
 	if err != nil {
-		return nil, nil, ErrWithExitf("vault token: %s", err)
+		return nil, nil, ErrWithExitf("vault_token: %s", err)
 	}
 
 	// Attempt to renew the secret. If we do not have a secret or if that secret
@@ -118,13 +123,19 @@ func (d *VaultToken) Fetch(clients *ClientSet, opts *QueryOptions) (interface{},
 		return nil, nil, ErrWithExitf("error obtaining from vault: %s", err)
 	}
 
+	leaseDuration := leaseDurationOrDefault(vaultSecret.Auth.LeaseDuration)
+	if leaseDuration == 0 {
+		log.Printf("[WARN] (%s) lease duration is 0, setting to 5s", d.Display())
+		leaseDuration = 5
+	}
+
 	// Create our cloned secret
 	secretauth := &vaultapi.SecretAuth{
 		ClientToken:   vaultSecret.Auth.ClientToken,
 		Accessor:      vaultSecret.Auth.Accessor,
 		Policies:      vaultSecret.Auth.Policies,
 		Metadata:      vaultSecret.Auth.Metadata,
-		LeaseDuration: leaseDurationOrDefault(vaultSecret.Auth.LeaseDuration),
+		LeaseDuration: leaseDuration,
 		Renewable:     vaultSecret.Auth.Renewable,
 	}
 
@@ -151,7 +162,20 @@ func (d *VaultToken) CanShare() bool {
 
 // HashCode returns the hash code for this dependency.
 func (d *VaultToken) HashCode() string {
-	return fmt.Sprintf("VaultToken|%s/%s", d.Mount, d.Action)
+	// To enable the use of defaults we have to cover the case when these
+	// fields are not set
+	if len(d.ID) == 0 {
+		return "VaultToken|token/renew-self|consul-template"
+	}	else if len(d.Action) == 0 {
+		// If this function is called with an empty token the defaults are assumed
+		// but any Token with a custom ID also needs to have an action specified
+		log.Printf("[ERROR] (%s) Invalid VaultToken - ID set but Action missing", d.Display())
+		return ""
+	}	else if len(d.Mount) == 0 {
+		return fmt.Sprintf("VaultToken|token/%s|%s", d.Action, d.ID)
+	}
+
+	return fmt.Sprintf("VaultToken|%s/%s|%s", d.Mount, d.Action, d.ID)
 }
 
 // Display returns a string that should be displayed to the user in output (for
@@ -171,14 +195,9 @@ func (d *VaultToken) Stop() {
 	}
 }
 
-
-// ParseVaultToken creates a new VaultToken dependency.
-//func ParseVaultToken() (*VaultToken, error) {
-//	return &VaultToken{stopCh: make(chan struct{})}, nil
-//}
-
 // ParseVaultToken creates a new VaultToken dependency.
 func ParseVaultToken(s ...string) (*VaultToken, error) {
+	id := "consul-template"
 	action := "renew-self"
 	mount := "token"
 	var rest []string
@@ -186,15 +205,19 @@ func ParseVaultToken(s ...string) (*VaultToken, error) {
 	// we assume that, if no argument is given, a token renewal is requested
 	switch len(s) {
 	case 0:
-		log.Printf("[DEBUG] No parameters passed, assuming defaults")
+		// To allow backward’s compatibility
+		log.Printf("[DEBUG] No parameters passed, using consul-template's token")
 	default:
-		rest = s[2:len(s)]
+		rest = s[3:len(s)]
+		fallthrough
+	case 3:
+		mount = s[2]
 		fallthrough
 	case 2:
-		mount = s[1]
-		fallthrough
+		action = s[1]
+		id = s[0]
 	case 1:
-		action = s[0]
+		return nil, fmt.Errorf("expected 2 or more arguments, got %d", len(s))
 	}
 
 	if len(mount) == 0 {
@@ -215,6 +238,7 @@ func ParseVaultToken(s ...string) (*VaultToken, error) {
 	}
 
 	vs := &VaultToken{
+		ID:      id,
 		Action:  action,
 		Mount:   mount,
 		data:    data,
