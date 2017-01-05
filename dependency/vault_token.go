@@ -141,12 +141,15 @@ func (d *VaultTokenQuery) Fetch(clients *ClientSet, opts *QueryOptions) (interfa
 			Accessor:      d.token.Auth.Accessor,
 			Policies:      d.token.Auth.Policies,
 			Metadata:      d.token.Auth.Metadata,
-			LeaseDuration: d.token.Auth.LeaseDuration,
-			Renewable:     d.token.Auth.Renewable,
+			LeaseDuration: leaseDuration,
+			Renewable:     renewal.Auth.Renewable,
 		}
 
 		token := &Secret{
+			LeaseID:       renewal.LeaseID,
 			LeaseDuration: secretauth.LeaseDuration,
+			Renewable:     secretauth.Renewable,
+			Data:          renewal.Data,
 			Auth:          secretauth,
 		}
 
@@ -186,7 +189,10 @@ func (d *VaultTokenQuery) Fetch(clients *ClientSet, opts *QueryOptions) (interfa
 	}
 
 	token := &Secret{
+		LeaseID:       vaultSecret.LeaseID,
 		LeaseDuration: secretauth.LeaseDuration,
+		Renewable:     secretauth.Renewable,
+		Data:          vaultSecret.Data,
 		Auth:          secretauth,
 	}
 
