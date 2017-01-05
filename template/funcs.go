@@ -18,6 +18,7 @@ import (
 	dep "github.com/hashicorp/consul-template/dependency"
 	"github.com/pkg/errors"
 	yaml "gopkg.in/yaml.v2"
+	vaultapi "github.com/hashicorp/vault/api"
 )
 
 // now is function that represents the current time in UTC. This is here
@@ -345,6 +346,35 @@ func servicesFunc(b *Brain, used, missing *dep.Set) func(...string) ([]*dep.Cata
 
 		if value, ok := b.Recall(d); ok {
 			return value.([]*dep.CatalogSnippet), nil
+		}
+
+		missing.Add(d)
+
+		return result, nil
+	}
+}
+
+// tokenFunc returns or accumulates token dependencies from Vault.
+func tokenFunc(b *Brain, used, missing *dep.Set) func(...string) (*vaultapi.SecretAuth, error) {
+	return func(s ...string) (*vaultapi.SecretAuth, error) {
+		result := &vaultapi.SecretAuth{}
+		secret := &dep.Secret{}
+
+		if len(s) < 2 {
+			return result, nil
+		}
+
+		d, err := dep.NewVaultTokenQuery(s...)
+		if err != nil {
+			return result, nil
+		}
+
+		used.Add(d)
+
+		if value, ok := b.Recall(d); ok {
+			secret = value.(*dep.Secret)
+			result = secret.Auth
+			return result, nil
 		}
 
 		missing.Add(d)

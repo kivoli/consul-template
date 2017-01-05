@@ -1,5 +1,9 @@
 package dependency
 
+import(
+	vaultapi "github.com/hashicorp/vault/api"
+)
+
 var (
 	// VaultDefaultLeaseDuration is the default lease duration in seconds.
 	VaultDefaultLeaseDuration = 5 * 60
@@ -15,6 +19,7 @@ type Secret struct {
 	// Data is the actual contents of the secret. The format of the data
 	// is arbitrary and up to the secret backend.
 	Data map[string]interface{}
+	Auth *vaultapi.SecretAuth
 }
 
 // leaseDurationOrDefault returns a value or the default lease duration.
